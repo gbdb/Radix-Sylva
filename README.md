@@ -1,0 +1,89 @@
+# Radix Sylva
+
+Base de données botanique publique (monde tempéré, focus Québec/Canada).  
+Projet Django séparé de **Jardin bIOT** — **Pass A** : squelette + modèles + API lecture + OpenAPI.
+
+**Prod (prévu)** : sous-domaine de **`jardinbiot.ca`** (pas `radixsylva.org` pour l’instant). Infra : voir [`docs/hebergement-radix-digitalocean.md`](../docs/hebergement-radix-digitalocean.md) et [`docs/plan-radix-biot-phases.md`](../docs/plan-radix-biot-phases.md).
+
+## Prérequis
+
+- Python 3.11+
+- **PostgreSQL** (recommandé pour coller à la prod + `search_vector`) — *ou* SQLite pour un test rapide
+
+### Si `docker: command not found`
+
+Tu n’as pas Docker installé (normal sur beaucoup de Mac). Trois options :
+
+**A — Rien installer de plus (SQLite)**  
+Ne mets **pas** `DATABASE_URL` dans `.env`. Django utilisera `db.sqlite3` à la racine du projet.  
+Limite : pas de vrai `tsvector` / Gin en dev (le modèle utilise un fallback, comme en dev BIOT sans Postgres).
+
+**B — Docker Desktop (recommandé si tu veux la stack du README)**  
+1. Installe [Docker Desktop pour Mac](https://www.docker.com/products/docker-desktop/).  
+2. Ouvre l’app une fois (icône baleine dans la barre de menu).  
+3. Dans `radixsylva/` : `docker compose up -d`  
+4. Dans `.env` :  
+   `DATABASE_URL=postgres://radixsylva:radixsylva@127.0.0.1:5433/radixsylva`
+
+**C — PostgreSQL sans Docker (Homebrew)**  
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+createuser -s radixsylva  # ou via psql : utilisateur + mot de passe selon ta config
+createdb -O radixsylva radixsylva
+```
+
+Puis dans `.env` (adapte user/mot de passe/port ; souvent port **5432**) :  
+`DATABASE_URL=postgres://radixsylva:TON_MOT_DE_PASSE@127.0.0.1:5432/radixsylva`
+
+## Configuration
+
+```bash
+cd radixsylva
+python3 -m venv .venv
+source .venv/bin/activate  # ou .venv\Scripts\activate sur Windows
+pip install -r requirements.txt
+cp .env.example .env
+# Optionnel : DATABASE_URL pour Postgres (Docker port 5433 ou Homebrew 5432)
+```
+
+## Migrations
+
+```bash
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver 0.0.0.0:8001
+```
+
+- Admin : http://127.0.0.1:8001/admin/
+- API : http://127.0.0.1:8001/api/v1/organisms/
+- OpenAPI : http://127.0.0.1:8001/api/v1/schema/
+- Swagger : http://127.0.0.1:8001/api/v1/docs/
+
+## Pass A — statut
+
+- [x] Projet Django + app `botanique`
+- [x] Modèles botaniques (`species_*` + `species_organismphoto` + `species_dataimportrun`)
+- [x] `source_rules.py` (import slugify depuis `botanique.utils`)
+- [x] API lecture `organisms`, `cultivars`, `amendments` + drf-spectacular
+- [x] Commandes d’import botaniques (`import_*`, `merge_*`, `populate_*`, `wipe_species`, `clean_organisms_keep_hq`, etc.)
+- [x] `enrichment.py`, `enrichment_score.py`, `pfaf_mapping.py`, `ancestrale_mapping.py`
+- [ ] `migrate_cultivar_organisms` — reste dans **Jardin bIOT** (réattribue des spécimens)
+- [x] Endpoints sync `/api/v1/sync/*` — **Pass B** (meta, amendments, organisms, cultivars, companions, deleted vide)
+
+### API sync (cache Jardin bIOT)
+
+- `GET /api/v1/sync/meta/` — `server_time`, `schema_version`
+- `GET /api/v1/sync/amendments/?since=&page=` — filtre `date_ajout > since`
+- `GET /api/v1/sync/organisms/?since=` — filtre `date_modification > since` + noms, propriétés, usages, calendrier, amendements recommandés
+- `GET /api/v1/sync/cultivars/?since=` — porte-greffes + pollinisateurs
+- `GET /api/v1/sync/companions/?since=` — filtre `date_ajout > since` (nouvelles relations)
+- `GET /api/v1/sync/deleted/` — réservé (listes vides en v1)
+
+Si `RADIX_SYLVA_SYNC_API_KEYS` est défini dans `.env`, envoyer l’en-tête `X-Radix-Sync-Key` (même valeur côté BIOT : `RADIX_SYLVA_SYNC_API_KEY`).
+
+## Import des données depuis Jardin bIOT
+
+Voir `CONTEXT.md` (pg_dump des tables `species_*` ou export JSON dédié).  
+**Attention** : la colonne `species_espece.photo_principale_id` pointait vers `species_photo` dans BIOT ; ici elle pointe vers `species_organismphoto` — migration données photos à planifier (script dédié).

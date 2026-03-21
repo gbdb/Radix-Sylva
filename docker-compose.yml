@@ -1,0 +1,15 @@
+# Dev : PostgreSQL pour Radix Sylva (port 5433 pour éviter conflit avec Postgres local)
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: radixsylva
+      POSTGRES_PASSWORD: radixsylva
+      POSTGRES_DB: radixsylva
+    ports:
+      - "5433:5432"
+    volumes:
+      - radixsylva_pgdata:/var/lib/postgresql/data
+
+volumes:
+  radixsylva_pgdata:
