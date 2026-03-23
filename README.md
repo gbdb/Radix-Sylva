@@ -3,29 +3,27 @@
 Base de données botanique publique (monde tempéré, focus Québec/Canada).  
 Projet Django séparé de **Jardin bIOT** — **Pass A** : squelette + modèles + API lecture + OpenAPI.
 
-**Prod (prévu)** : sous-domaine de **`jardinbiot.ca`** (pas `radixsylva.org` pour l’instant). Infra : voir [`docs/hebergement-radix-digitalocean.md`](../docs/hebergement-radix-digitalocean.md) et [`docs/plan-radix-biot-phases.md`](../docs/plan-radix-biot-phases.md).
+**Prod (prévu)** : sous-domaine de **`jardinbiot.ca`** (pas `radixsylva.org` pour l’instant). Infra : [`docs/deploy-digitalocean.md`](docs/deploy-digitalocean.md) (runbook **Jardin bIOT** : `docs/deploy-radix-digitalocean-runbook.md`) ; plan global : `biot/docs/plan-radix-biot-phases.md`.
 
 ## Prérequis
 
 - Python 3.11+
-- **PostgreSQL** (recommandé pour coller à la prod + `search_vector`) — *ou* SQLite pour un test rapide
+- **PostgreSQL obligatoire** (plus de SQLite pour la base Django — aligné prod + `search_vector`).
+
+**Fichiers PFAF au format `.sqlite`** : ce sont des **fichiers source** pour l’import (`import_pfaf`), pas la base Django.
 
 ### Si `docker: command not found`
 
-Tu n’as pas Docker installé (normal sur beaucoup de Mac). Trois options :
+Tu n’as pas Docker installé (normal sur beaucoup de Mac). Deux options :
 
-**A — Rien installer de plus (SQLite)**  
-Ne mets **pas** `DATABASE_URL` dans `.env`. Django utilisera `db.sqlite3` à la racine du projet.  
-Limite : pas de vrai `tsvector` / Gin en dev (le modèle utilise un fallback, comme en dev BIOT sans Postgres).
-
-**B — Docker Desktop (recommandé si tu veux la stack du README)**  
+**A — Docker Desktop (recommandé)**  
 1. Installe [Docker Desktop pour Mac](https://www.docker.com/products/docker-desktop/).  
 2. Ouvre l’app une fois (icône baleine dans la barre de menu).  
 3. Dans `radixsylva/` : `docker compose up -d`  
 4. Dans `.env` :  
    `DATABASE_URL=postgres://radixsylva:radixsylva@127.0.0.1:5433/radixsylva`
 
-**C — PostgreSQL sans Docker (Homebrew)**  
+**B — PostgreSQL sans Docker (Homebrew)**  
 
 ```bash
 brew install postgresql@16
@@ -36,6 +34,9 @@ createdb -O radixsylva radixsylva
 
 Puis dans `.env` (adapte user/mot de passe/port ; souvent port **5432**) :  
 `DATABASE_URL=postgres://radixsylva:TON_MOT_DE_PASSE@127.0.0.1:5432/radixsylva`
+
+Variables d’environnement (SECRET_KEY, `DATABASE_URL` local vs cloud) : voir **`docs/env-et-deploiement.md`**.  
+Si les repos **BIOT** et **Radix** sont côte à côte : alignement des `.env` et ports **5434 / 5433** → [`../biot/docs/dev-env-local-biot-radix.md`](../biot/docs/dev-env-local-biot-radix.md).
 
 ## Configuration
 
@@ -87,3 +88,5 @@ Si `RADIX_SYLVA_SYNC_API_KEYS` est défini dans `.env`, envoyer l’en-tête `X-
 
 Voir `CONTEXT.md` (pg_dump des tables `species_*` ou export JSON dédié).  
 **Attention** : la colonne `species_espece.photo_principale_id` pointait vers `species_photo` dans BIOT ; ici elle pointe vers `species_organismphoto` — migration données photos à planifier (script dédié).
+
+**Migration vers le serveur DigitalOcean (staging / prod)** : guide détaillé dans le dépôt Jardin bIOT — [`docs/migration-donnees-radix-phase-1-5.md`](../biot/docs/migration-donnees-radix-phase-1-5.md) (si les deux repos sont côte à côte).

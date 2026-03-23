@@ -7,3 +7,6 @@ drf-spectacular==0.28.0
 Pillow==11.0.0
 requests==2.32.3
 psycopg[binary]>=3.2
+
+# Production (Gunicorn sur le serveur — voir docs dans le repo biot)
+gunicorn>=22.0

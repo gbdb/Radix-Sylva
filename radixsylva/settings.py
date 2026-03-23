@@ -1,10 +1,11 @@
 """
 Django settings — Radix Sylva (base botanique publique).
-PostgreSQL recommandé (SearchVector + Gin). SQLite possible pour tests rapides.
+PostgreSQL uniquement (SearchVector + Gin). Définir DATABASE_URL dans .env.
 """
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -36,15 +37,14 @@ INSTALLED_APPS = [
     'botanique.apps.BotaniqueConfig',
 ]
 
-if env('DATABASE_URL', default=None):
-    DATABASES = {'default': env.db()}
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
+if not env('DATABASE_URL', default=None):
+    raise ImproperlyConfigured(
+        'Radix Sylva utilise uniquement PostgreSQL. '
+        'Définissez DATABASE_URL dans .env '
+        '(ex. postgres://user:pass@127.0.0.1:5433/radixsylva pour Docker local, '
+        'ou l’URL du Postgres sur DigitalOcean).'
+    )
+DATABASES = {'default': env.db()}
 
 if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
     INSTALLED_APPS.insert(
