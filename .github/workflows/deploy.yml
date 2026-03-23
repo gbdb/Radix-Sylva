@@ -2,7 +2,7 @@ name: Deploy Radix Sylva
 
 on:
   push:
-    branches: [master]
+    branches: [main]
 
 jobs:
   deploy:
@@ -16,7 +16,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /srv/radixsylva
-            git pull origin master
+            git pull origin main
             sudo -u radix /srv/radixsylva/.venv/bin/pip install -r requirements.txt
             sudo -u radix /srv/radixsylva/.venv/bin/python manage.py migrate
             sudo -u radix /srv/radixsylva/.venv/bin/python manage.py collectstatic --noinput
