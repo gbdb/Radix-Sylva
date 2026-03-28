@@ -3,7 +3,15 @@
 Base de données botanique publique (monde tempéré, focus Québec/Canada).  
 Projet Django séparé de **Jardin bIOT** — **Pass A** : squelette + modèles + API lecture + OpenAPI.
 
-**Prod (prévu)** : sous-domaine de **`jardinbiot.ca`** (pas `radixsylva.org` pour l’instant). Infra : [`docs/deploy-digitalocean.md`](docs/deploy-digitalocean.md) (runbook **Jardin bIOT** : `docs/deploy-radix-digitalocean-runbook.md`) ; plan global : `biot/docs/plan-radix-biot-phases.md`.
+**Prod** : `https://radix.jardinbiot.ca`. Infra : [`docs/deploy-digitalocean.md`](docs/deploy-digitalocean.md) (runbook **Jardin bIOT** : `biot/docs/deploy-radix-digitalocean-runbook.md`) ; plan global : `biot/docs/plan-radix-biot-phases.md`.
+
+## Documentation
+
+| Document | Rôle |
+|----------|------|
+| [`docs/README.md`](docs/README.md) | Index des fichiers dans `docs/`. |
+| [`docs/donnees-sources-et-modele.md`](docs/donnees-sources-et-modele.md) | Modèle de données, liste des sources d’import, réflexions (cultivars, conflits, pistes IQDHO/FIHOQ). |
+| [`docs/gestion-des-donnees.md`](docs/gestion-des-donnees.md) | **Opérationnel** : où et comment lancer les imports et la maintenance. |
 
 ## Prérequis
 

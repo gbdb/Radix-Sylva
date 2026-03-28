@@ -6,6 +6,12 @@
 - **API publique** `/api/v1/` (lecture). Écriture / sync avancée au fil des passes B/C.
 - **Pas de GeoDjango** ; géométries éventuelles futures en JSON (comme BIOT).
 
+## Documentation (dépôt)
+
+- Index : **`docs/README.md`**
+- Structure des données, sources, espèce vs cultivar, fusion multi-sources : **`docs/donnees-sources-et-modele.md`**
+- Guide opérationnel (commandes `manage.py`, enchaînements, lien avec BIOT) : **`docs/gestion-des-donnees.md`**
+
 ## Base de données
 
 - **PostgreSQL obligatoire** en dev et prod (`DATABASE_URL` dans `.env`). Docker local : `docker-compose.yml`, port host `5433`.
@@ -25,7 +31,7 @@
 
 ## Déploiement production (DigitalOcean)
 
-État au **déploiement initial** (à maintenir à jour si l’infra change) :
+État **prod** (mars 2026) — même droplet que **Jardin bIOT** ; voir aussi **`biot/docs/deploy-production-digitalocean-github.md`**.
 
 | Élément | Valeur |
 |--------|--------|
@@ -33,26 +39,27 @@
 | **Région** | Toronto |
 | **Droplet** | Ubuntu 24.04 LTS |
 | **IP publique** | `137.184.169.255` |
-| **URL publique** | `https://radix.jardinbiot.ca` (admin : `/admin/`) |
+| **URL publique** | `https://radix.jardinbiot.ca` (admin : `/admin/`, API : `/api/v1/`) |
 | **TLS** | Let’s Encrypt (Certbot + Nginx) |
-| **PostgreSQL** | Installé **sur le droplet** (pas Managed DB) ; utilisateur DB : `radix` |
-| **Bases** | `radix_staging` (données importées depuis le Mac, ex. ~559 espèces — validation), `radix_prod` (schéma prêt ; **à alimenter** par copie staging→prod quand validé) |
+| **PostgreSQL** | Sur le droplet (bases **`radixsylva`** / prod + staging selon config) |
+| **Jardin bIOT (même serveur)** | `https://jardinbiot.ca` — base **`jardinbiot`** |
 | **Code** | `/srv/radixsylva/` |
 | **Venv** | `/srv/radixsylva/.venv/` |
-| **App WSGI** | Gunicorn, **port local** `127.0.0.1:8001` |
+| **App WSGI** | Gunicorn (socket local) |
 | **systemd** | `radix-gunicorn.service` |
-| **Reverse proxy** | Nginx → Gunicorn ; fichiers statiques servis par Nginx (`/static/` → `staticfiles/`) |
+| **Reverse proxy** | Nginx → Gunicorn ; `/static/` → `staticfiles/` |
+| **CI/CD** | GitHub Actions : push **`main`** → `git pull` + migrate + collectstatic + restart — secrets `DROPLET_IP`, `SSH_PRIVATE_KEY` |
 
 Variables d’environnement, procédure de mise à jour et bonnes pratiques : **`docs/env-et-deploiement.md`**.
 
-**Phase 1.5 (données)** — Mac → **`radix_staging`** : **`biot/docs/migration-donnees-radix-phase-1-5.md`**. Puis **`radix_staging` → `radix_prod`**, BIOT en **`https://radix.jardinbiot.ca/api/v1`** : **`docs/env-et-deploiement.md`** (§4, §7, §8).
+**Données / sync** — migration Mac → staging, staging → prod, sync BIOT : **`biot/docs/migration-donnees-radix-phase-1-5.md`**, **`docs/env-et-deploiement.md`**.
 
 ---
 
 ## Prochaines étapes
 
-1. ~~Commandes `import_*` + `enrichment.py` / `enrichment_score` / mappings~~ (fait).
-2. Endpoints `GET /api/v1/sync/...` + auth par clé (`RADIX_SYLVA_SYNC_API_KEYS`) — Pass B.
-3. `docs/DATA_LICENSE.md` + politique photos (à compléter avant public).
-4. Données : **staging** OK (import Mac) ; **copier staging → prod** puis BIOT `sync_radixsylva` — **`docs/env-et-deploiement.md`** §7 ; guide Mac → staging : **`biot/docs/migration-donnees-radix-phase-1-5.md`**.
-5. ~~Déploiement public sous-domaine `jardinbiot.ca`~~ (fait — voir section ci-dessus).
+1. ~~Commandes `import_*` + enrichissement / mappings~~ (fait).
+2. ~~API `/api/v1/sync/*` + déploiement public~~ (fait).
+3. `docs/DATA_LICENSE.md` + politique photos (à compléter si besoin).
+4. ~~Données prod + sync vers BIOT~~ (fait — ex. ~559 espèces côté API, cache BIOT via `sync_radixsylva`).
+5. ~~Déploiement `jardinbiot.ca` + Radix sur le même droplet + GitHub Actions~~ (fait — **`biot/docs/deploy-production-digitalocean-github.md`**).

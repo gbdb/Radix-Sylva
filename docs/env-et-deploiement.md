@@ -206,6 +206,7 @@ Les options **`--no-owner`** et **`--no-privileges`** sur **`pg_dump`** et **`pg
 
 ## 9. Références
 
+- **Prod conjointe BIOT + Radix (DO, GitHub Actions, `jardinbiot.ca`)** : dépôt **Jardin bIOT**, `docs/deploy-production-digitalocean-github.md`.
 - Runbook détaillé (Nginx, Certbot, alternatives Managed DB) : dépôt **Jardin bIOT**, `docs/deploy-radix-digitalocean-runbook.md`.
 - **Phase 1.5 — copier la base locale vers `radix_staging` sur le droplet** : dépôt **Jardin bIOT**, `docs/migration-donnees-radix-phase-1-5.md`.
 - `CONTEXT.md` — section déploiement.

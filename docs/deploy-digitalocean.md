@@ -1,8 +1,11 @@
 # Déploiement DigitalOcean (Radix Sylva)
 
-Le **runbook complet** (PostgreSQL managé, droplet, Gunicorn, Nginx, Let’s Encrypt, variables d’environnement) est maintenu dans le dépôt **Jardin bIOT** :
+**État prod (mars 2026)** — même droplet que Jardin bIOT, GitHub Actions, `https://radix.jardinbiot.ca` :  
+**[`biot/docs/deploy-production-digitalocean-github.md`](https://github.com/gbdb/biot/blob/master/docs/deploy-production-digitalocean-github.md)**  
+(ou en local : `../biot/docs/deploy-production-digitalocean-github.md`)
 
-- **[`biot/docs/deploy-radix-digitalocean-runbook.md`](https://github.com/gbdb/biot/blob/master/docs/deploy-radix-digitalocean-runbook.md)**  
-  (ou, en local avec les deux repos côte à côte : `../biot/docs/deploy-radix-digitalocean-runbook.md`)
+Le **runbook initial** (PostgreSQL, droplet, Gunicorn, Nginx, Let’s Encrypt) :
+
+- **[`biot/docs/deploy-radix-digitalocean-runbook.md`](https://github.com/gbdb/biot/blob/master/docs/deploy-radix-digitalocean-runbook.md)**
 
 Complément sur les secrets et `DATABASE_URL` : **[env-et-deploiement.md](env-et-deploiement.md)**.
