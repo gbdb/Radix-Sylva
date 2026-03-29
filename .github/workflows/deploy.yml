@@ -15,6 +15,7 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            git config --global --add safe.directory /srv/radixsylva
             cd /srv/radixsylva
             git pull origin main
             sudo -u radix /srv/radixsylva/.venv/bin/pip install -r requirements.txt
