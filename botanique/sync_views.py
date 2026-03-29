@@ -84,6 +84,11 @@ class SyncAmendmentsView(APIView):
     summary='Sync organismes (avec noms, propriétés, usages, calendrier, amendements)',
     parameters=[
         OpenApiParameter('since', str, description='ISO 8601 — filtre date_modification > since'),
+        OpenApiParameter(
+            'organism_id',
+            int,
+            description='Si défini : un seul organisme (pk), ignore since — sync ciblée (ex. Jardin bIOT après organism-request).',
+        ),
         OpenApiParameter('page', int),
         OpenApiParameter('page_size', int),
     ],
@@ -93,8 +98,8 @@ class SyncOrganismsView(APIView):
     permission_classes = [HasSyncAPIKey]
 
     def get(self, request):
-        since_dt = _parse_since_param(request.query_params.get('since'))
-        qs = (
+        organism_id_raw = request.query_params.get('organism_id')
+        base_qs = (
             Organism.objects.prefetch_related(
                 'noms',
                 'proprietes',
@@ -102,9 +107,18 @@ class SyncOrganismsView(APIView):
                 'calendrier',
                 'amendements_recommandes',
             )
-            .all()
             .order_by('id')
         )
+        if organism_id_raw is not None and organism_id_raw != '':
+            try:
+                organism_id = int(organism_id_raw)
+            except (TypeError, ValueError):
+                return Response({'detail': 'organism_id invalide'}, status=400)
+            qs = base_qs.filter(pk=organism_id)
+            return _paginated_sync(request, qs, organism_to_sync_dict, None, 'date_modification')
+
+        since_dt = _parse_since_param(request.query_params.get('since'))
+        qs = base_qs.all()
         return _paginated_sync(request, qs, organism_to_sync_dict, since_dt, 'date_modification')
 
 

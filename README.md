@@ -86,6 +86,7 @@ python manage.py runserver 0.0.0.0:8001
 - `GET /api/v1/sync/meta/` — `server_time`, `schema_version`
 - `GET /api/v1/sync/amendments/?since=&page=` — filtre `date_ajout > since`
 - `GET /api/v1/sync/organisms/?since=` — filtre `date_modification > since` + noms, propriétés, usages, calendrier, amendements recommandés
+- `GET /api/v1/sync/organisms/?organism_id=<pk>` — **sync ciblée** : un seul organisme (ignore `since`) ; 0 ou 1 résultat — utilisé par Jardin bIOT après une demande d’espèce (`missing-species-request`)
 - `GET /api/v1/sync/cultivars/?since=` — porte-greffes + pollinisateurs
 - `GET /api/v1/sync/companions/?since=` — filtre `date_ajout > since` (nouvelles relations)
 - `GET /api/v1/sync/deleted/` — réservé (listes vides en v1)
