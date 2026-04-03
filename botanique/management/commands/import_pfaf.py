@@ -204,6 +204,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        self.stats = {}
         filepath = Path(options['filepath'])
         dry_run = options['dry_run']
         limit = options['limit'] or 0
@@ -250,7 +251,7 @@ class Command(BaseCommand):
             stats={'dry_run': dry_run},
         )
 
-        stats = {
+        self.stats = {
             'created': 0,
             'enriched': 0,
             'pfaf_created': 0,
@@ -278,34 +279,30 @@ class Command(BaseCommand):
                 row = _norm_key_row(row_series, cols)
 
                 try:
-                    self._process_row(
-                        row,
-                        run,
-                        update_existing,
-                        stats,
-                    )
+                    self._process_row(row, run, update_existing)
                 except Exception as e:
-                    stats['errors'] += 1
-                    if stats['errors'] <= 10:
+                    self.stats['errors'] += 1
+                    if self.stats['errors'] <= 10:
                         self.stdout.write(
                             self.style.WARNING(f'  Erreur ligne {idx}: {e}')
                         )
 
             run.status = 'success'
             run.finished_at = timezone.now()
-            run.stats = stats
+            run.stats = self.stats
             run.save()
 
             self.stdout.write(self.style.SUCCESS('\nTerminé.'))
+            s = self.stats
             self.stdout.write(
-                f"  Créés (organismes): {stats['created']}\n"
-                f"  Enrichis (organismes existants): {stats['enriched']}\n"
-                f"  OrganismPFAF créés: {stats['pfaf_created']}\n"
-                f"  OrganismPFAF mis à jour: {stats['pfaf_updated']}\n"
+                f"  Créés (organismes): {s['created']}\n"
+                f"  Enrichis (organismes existants): {s['enriched']}\n"
+                f"  OrganismPFAF créés: {s['pfaf_created']}\n"
+                f"  OrganismPFAF mis à jour: {s['pfaf_updated']}\n"
                 f"  OrganismPFAF ignorés (déjà présents, sans --update-existing): "
-                f"{stats['pfaf_skipped_existing']}\n"
-                f"  Ignorés (lignes): {stats['skipped']}\n"
-                f"  Erreurs: {stats['errors']}"
+                f"{s['pfaf_skipped_existing']}\n"
+                f"  Ignorés (lignes): {s['skipped']}\n"
+                f"  Erreurs: {s['errors']}"
             )
             if dry_run:
                 self.stdout.write(self.style.WARNING('  [DRY-RUN] Aucune donnée persistée.'))
@@ -332,10 +329,8 @@ class Command(BaseCommand):
     def _process_row(
         self,
         row: Dict[str, Any],
-        line_no: int,
         run: DataImportRun,
         update_existing: bool,
-        stats: Dict[str, Any],
     ) -> None:
         nom_latin = get_row_value(
             row,
@@ -358,7 +353,7 @@ class Command(BaseCommand):
         )
 
         if not str(nom_latin).strip():
-            stats['skipped'] += 1
+            self.stats['skipped'] += 1
             return
 
         nom_latin = str(nom_latin).strip()
@@ -422,7 +417,7 @@ class Command(BaseCommand):
             )
 
         if was_created:
-            stats['created'] += 1
+            self.stats['created'] += 1
         else:
             before = {
                 'famille': organism.famille,
@@ -454,7 +449,7 @@ class Command(BaseCommand):
                 organism.fixateur_azote = True
                 enriched = True
             if enriched:
-                stats['enriched'] += 1
+                self.stats['enriched'] += 1
 
         if was_created and fixateur_pfaf is True and not organism.fixateur_azote:
             organism.fixateur_azote = True
@@ -504,9 +499,9 @@ class Command(BaseCommand):
                 for key, val in pfaf_defaults.items():
                     setattr(pfaf_obj, key, val)
                 pfaf_obj.save()
-                stats['pfaf_updated'] += 1
+                self.stats['pfaf_updated'] += 1
             else:
-                stats['pfaf_skipped_existing'] += 1
+                self.stats['pfaf_skipped_existing'] += 1
         else:
             OrganismPFAF.objects.create(organism=organism, **pfaf_defaults)
-            stats['pfaf_created'] += 1
+            self.stats['pfaf_created'] += 1
