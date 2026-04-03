@@ -1,416 +1,512 @@
 """
-Import Plants For A Future (PFAF) — complément à Hydro-Québec.
+Import Plants For A Future (PFAF) — CSV officiel (latin-1, ~40 colonnes).
 
-Licence : la base PFAF est désormais payante (Standard Home 50 USD, Commercial 150 USD,
-Student 30 USD pour ~7400 plantes). N'utiliser que des fichiers acquis légalement via pfaf.org.
+Licence : base PFAF payante — n'utiliser que des fichiers acquis légalement via pfaf.org.
 
-Formats supportés (détection par extension) :
-  - JSON  : liste d'objets (clés en anglais ou français, avec ou sans espaces)
-  - CSV   : délimiteur auto (virgule, point-virgule, tab), en-têtes normalisés
-  - SQLite: table plant_data (ou --table=...)
+Lit le CSV avec pandas, enrichit Organism (champs vides), crée ou met à jour OrganismPFAF.
+Ordre par ligne (strict) : organism.save() → ensure_organism_genus(organism) → OrganismPFAF.
 
-Utilise species.pfaf_mapping pour unifier les noms de champs (Latin Name, latin_name,
-nom_latin, etc.). Par défaut --merge=fill_gaps pour préserver Hydro-Québec.
-Données brutes stockées dans Organism.data_sources['pfaf'].
+Mode --dry-run : aucune persistance (transaction annulée en fin de commande).
 """
-from pathlib import Path
+from __future__ import annotations
 
+import math
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import pandas as pd
+from django.db import transaction
 from django.core.management.base import BaseCommand
-from botanique.models import Cultivar, Organism
-from botanique.pfaf_mapping import (
-    PFAF_FIELD_ALIASES,
-    get_available_columns,
-    get_row_value,
-    load_pfaf_data,
-)
+from django.utils import timezone
+
+from botanique.models import Cultivar, DataImportRun, Organism, OrganismPFAF
+from botanique.pfaf_mapping import get_row_value, to_snake
 from botanique.source_rules import (
-    MERGE_FILL_GAPS,
-    MERGE_OVERWRITE,
-    SOURCE_PFAF,
     apply_fill_gaps,
     ensure_organism_genus,
     find_organism_and_cultivar,
     find_or_match_organism,
     get_unique_slug_latin,
-    merge_zones_rusticite,
     parse_cultivar_from_latin,
 )
+
+# Shade (colonne PFAF) → besoin_soleil (choices Organism)
+SHADE_MAP = {
+    'S': 'plein_soleil',
+    'SN': 'soleil_partiel',
+    'N': 'mi_ombre',
+    'FS': 'mi_ombre',
+    'FSN': 'soleil_partiel',
+}
+
+# Moisture → besoin_eau
+MOISTURE_MAP = {
+    'D': 'tres_faible',
+    'DM': 'faible',
+    'M': 'moyen',
+    'MWe': 'eleve',
+    'We': 'eleve',
+    'WeWa': 'tres_eleve',
+    'Wa': 'tres_eleve',
+}
+
+# Habit (valeur brute) → type_organisme (choices Organism)
+HABIT_MAP = {
+    'Tree': 'arbre_ornement',
+    'Shrub': 'arbuste',
+    'Perennial': 'vivace',
+    'Annual': 'annuelle',
+    'Biennial': 'bisannuelle',
+    'Annual/Biennial': 'bisannuelle',
+    'Biennial/Perennial': 'vivace',
+    'Annual/Perennial': 'vivace',
+    'Bulb': 'vivace',
+    'Corm': 'vivace',
+    'Climber': 'grimpante',
+    'Perennial Climber': 'grimpante',
+    'Annual Climber': 'grimpante',
+    'Bamboo': 'vivace',
+    'Fern': 'vivace',
+}
+
+
+def _norm_key_row(series: pd.Series, columns: list[str]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for c in columns:
+        k = to_snake(str(c))
+        v = series.get(c)
+        if v is None or (isinstance(v, float) and (math.isnan(v) or pd.isna(v))):
+            out[k] = ''
+        elif pd.isna(v):
+            out[k] = ''
+        else:
+            out[k] = v
+    return out
+
+
+def _parse_float(val: Any) -> Optional[float]:
+    if val is None or val == '':
+        return None
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and (math.isnan(val) or pd.isna(val)):
+            return None
+        return float(val)
+    s = str(val).strip().replace(',', '.')
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _parse_int_rating(val: Any) -> Optional[int]:
+    f = _parse_float(val)
+    if f is None:
+        return None
+    i = int(round(f))
+    if i < 0:
+        return 0
+    if i > 5:
+        return 5
+    return i
+
+
+def _parse_uk_hardiness(val: Any) -> Optional[int]:
+    f = _parse_float(val)
+    if f is None:
+        return None
+    i = int(round(f))
+    if i < 1:
+        return 1
+    if i > 10:
+        return 10
+    return i
+
+
+def _parse_bool_na(val: Any) -> Optional[bool]:
+    if val is None or val == '':
+        return None
+    if isinstance(val, float) and (math.isnan(val) or pd.isna(val)):
+        return None
+    s = str(val).strip().lower()
+    if s in ('', 'nan', 'none'):
+        return None
+    if s in ('true', 't', 'yes', 'y', '1'):
+        return True
+    if s in ('false', 'f', 'no', 'n', '0'):
+        return False
+    return None
+
+
+def _parse_nitrogen_fixer(val: Any) -> Optional[bool]:
+    if val is None or val == '':
+        return None
+    s = str(val).strip().lower()
+    if s in ('true', 't', 'yes', 'y', '1'):
+        return True
+    if s in ('false', 'f', 'no', 'n', '0'):
+        return False
+    if 'y' in s or 'yes' in s or 'oui' in s:
+        return True
+    return None
+
+
+def _shade_to_besoin_soleil(raw: str) -> str:
+    s = (raw or '').strip().upper()
+    if not s:
+        return ''
+    return SHADE_MAP.get(s, '')
+
+
+def _moisture_to_besoin_eau(raw: str) -> str:
+    s = (raw or '').strip()
+    if not s:
+        return ''
+    return MOISTURE_MAP.get(s, '')
+
+
+def _habit_to_type_organisme(raw: str) -> str:
+    s = (raw or '').strip()
+    if not s:
+        return 'vivace'
+    return HABIT_MAP.get(s, 'vivace')
 
 
 class Command(BaseCommand):
     help = (
-        'Importe des plantes depuis un fichier PFAF (JSON, CSV ou SQLite). '
-        'Base PFAF payante (50–150 USD) — n\'utiliser que des fichiers acquis via pfaf.org. '
-        'Par défaut merge=fill_gaps pour préserver les données Hydro-Québec.'
+        'Importe le CSV PFAF (latin-1) : enrichit Organism et OrganismPFAF. '
+        'Fichier hors dépôt — passer --filepath.'
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--file',
+            '--filepath',
             type=str,
-            default=None,
-            help='Fichier à importer: .json, .csv ou .sqlite/.db',
+            required=True,
+            help='Chemin absolu vers le fichier CSV PFAF',
         )
         parser.add_argument(
-            '--db',
-            type=str,
-            default=None,
-            help='Alias pour --file (même chose). Base SQLite pfaf-data possible.',
-        )
-        parser.add_argument(
-            '--table',
-            type=str,
-            default='plant_data',
-            help='Nom de la table SQLite (défaut: plant_data).',
+            '--dry-run',
+            action='store_true',
+            help='Simule sans persister (transaction annulée en fin de commande).',
         )
         parser.add_argument(
             '--limit',
             type=int,
             default=0,
-            help='Nombre max à importer (0 = tout).',
+            help='Traiter uniquement les N premières lignes de données (0 = tout).',
         )
         parser.add_argument(
-            '--merge',
-            type=str,
-            choices=[MERGE_OVERWRITE, MERGE_FILL_GAPS],
-            default=MERGE_FILL_GAPS,
-            help=f'{MERGE_OVERWRITE}: écraser. {MERGE_FILL_GAPS}: ne remplir que les vides (défaut).',
+            '--update-existing',
+            action='store_true',
+            help='Met à jour OrganismPFAF même si un enregistrement existe déjà.',
         )
 
     def handle(self, *args, **options):
-        file_path = options.get('file') or options.get('db')
-        if not file_path:
-            self.stdout.write(
-                self.style.ERROR('❌ Indiquez --file=chemin ou --db=chemin (ex: --file=pfaf.json)')
-            )
+        filepath = Path(options['filepath'])
+        dry_run = options['dry_run']
+        limit = options['limit'] or 0
+        update_existing = options['update_existing']
+
+        if not filepath.is_file():
+            self.stdout.write(self.style.ERROR(f'Fichier introuvable: {filepath}'))
             return
 
-        limit = options['limit']
-        merge_mode = options['merge']
-        path = Path(file_path)
+        def _run():
+            self._execute_import(filepath, dry_run, limit, update_existing)
 
+        if dry_run:
+            with transaction.atomic():
+                _run()
+                transaction.set_rollback(True)
+        else:
+            _run()
+
+    def _execute_import(
+        self,
+        filepath: Path,
+        dry_run: bool,
+        limit: int,
+        update_existing: bool,
+    ) -> None:
         try:
-            data = load_pfaf_data(path, db_table=options['table'])
-        except FileNotFoundError:
-            self.stdout.write(self.style.ERROR(f'❌ Fichier introuvable: {path}'))
-            return
-        except ValueError as e:
-            self.stdout.write(self.style.ERROR(f'❌ {e}'))
-            return
+            df = pd.read_csv(filepath, encoding='latin-1', dtype=str, keep_default_na=False)
         except Exception as e:
-            self.stdout.write(self.style.ERROR(f'❌ Erreur de chargement: {e}'))
+            self.stdout.write(self.style.ERROR(f'Lecture CSV: {e}'))
             return
 
-        if not data:
-            self.stdout.write(self.style.WARNING('⚠️ Aucune donnée trouvée dans le fichier.'))
-            return
-
+        df = df.fillna('')
+        n_total = len(df)
         if limit > 0:
-            data = data[:limit]
+            df = df.iloc[:limit]
+        n = len(df)
+        cols = list(df.columns)
 
-        self.stdout.write(self.style.SUCCESS(
-            f'🌿 Import PFAF (merge={merge_mode}, {len(data)} entrées)'
-        ))
+        run = DataImportRun.objects.create(
+            source='pfaf',
+            status='running',
+            trigger='gestion_donnees',
+            stats={'dry_run': dry_run},
+        )
 
-        # Validation: vérifier les colonnes disponibles et critiques
-        validation_passed = True
-        if data:
-            available_cols = get_available_columns(data)
-            self.stdout.write(f'\n🔍 Colonnes disponibles dans le fichier ({len(available_cols)}):')
-            self.stdout.write(f'   {", ".join(available_cols[:20])}{"..." if len(available_cols) > 20 else ""}')
-            
-            # Vérifier si les colonnes critiques sont trouvées
-            first_row = data[0]
-            nom_latin_found = get_row_value(first_row, PFAF_FIELD_ALIASES['latin_name'], default=None)
-            nom_commun_found = get_row_value(first_row, PFAF_FIELD_ALIASES['common_name'], default=None)
-            
-            self.stdout.write(f'\n🔍 Test sur la première ligne:')
-            if nom_latin_found:
-                self.stdout.write(self.style.SUCCESS(f'   ✓ nom_latin trouvé: "{nom_latin_found}"'))
-            else:
-                self.stdout.write(self.style.WARNING(
-                    f'   ✗ nom_latin non trouvé (colonnes testées: {", ".join(PFAF_FIELD_ALIASES["latin_name"][:5])}...)'
-                ))
-            if nom_commun_found:
-                self.stdout.write(self.style.SUCCESS(f'   ✓ nom_commun trouvé: "{nom_commun_found}"'))
-            else:
-                self.stdout.write(self.style.WARNING(
-                    f'   ✗ nom_commun non trouvé (colonnes testées: {", ".join(PFAF_FIELD_ALIASES["common_name"][:5])}...)'
-                ))
-            
-            if not nom_latin_found and not nom_commun_found:
-                validation_passed = False
-                self.stdout.write(self.style.ERROR(
-                    '\n⚠️ ATTENTION: ni nom_latin ni nom_commun trouvés dans la première ligne!'
-                ))
-                self.stdout.write(self.style.WARNING(
-                    '   Les enregistrements seront ignorés si cette condition persiste.'
-                ))
-                # Suggérer des colonnes similaires
-                similar_latin = [c for c in available_cols if 'latin' in c or 'scientific' in c or 'species' in c or 'binomial' in c]
-                similar_common = [c for c in available_cols if 'common' in c or 'name' in c or 'vernacular' in c or 'english' in c]
-                if similar_latin:
-                    self.stdout.write(self.style.WARNING(
-                        f'   Colonnes similaires à "latin_name": {", ".join(similar_latin)}'
-                    ))
-                if similar_common:
-                    self.stdout.write(self.style.WARNING(
-                        f'   Colonnes similaires à "common_name": {", ".join(similar_common)}'
-                    ))
-        
-        # Demander confirmation si validation échoue
-        if not validation_passed:
-            self.stdout.write(self.style.WARNING(
-                '\n⚠️ La validation a détecté des problèmes. L\'import continuera mais beaucoup d\'enregistrements pourraient être ignorés.'
-            ))
+        stats = {
+            'created': 0,
+            'enriched': 0,
+            'pfaf_created': 0,
+            'pfaf_updated': 0,
+            'skipped': 0,
+            'errors': 0,
+            'pfaf_skipped_existing': 0,
+            'rows': n,
+            'dry_run': dry_run,
+        }
 
-        created = 0
-        updated = 0
-        skipped = 0
-        skipped_empty_names = 0
-        skipped_errors = 0
+        self.stdout.write(
+            self.style.SUCCESS(
+                f'Import PFAF — {n} ligne(s) sur {n_total} totales'
+                + (' [DRY-RUN]' if dry_run else '')
+            )
+        )
 
-        for idx, row in enumerate(data, 1):
-            try:
-                nom_latin = get_row_value(row, PFAF_FIELD_ALIASES['latin_name'], default='')
-                nom_commun = get_row_value(row, PFAF_FIELD_ALIASES['common_name'], default='')
-                
-                # Si ni nom_latin ni nom_commun, on ne peut pas importer
-                if not nom_latin and not nom_commun:
-                    skipped += 1
-                    skipped_empty_names += 1
-                    # Afficher les détails seulement pour les premières lignes ignorées
-                    if skipped_empty_names <= 3:
-                        available_cols = list(row.keys())
-                        self.stdout.write(
-                            self.style.WARNING(
-                                f'  ⚠️ Ignoré ligne {idx}: nom_latin et nom_commun vides\n'
-                                f'     Colonnes disponibles: {", ".join(available_cols[:10])}{"..." if len(available_cols) > 10 else ""}'
-                            )
-                        )
-                    continue
-
-                famille = get_row_value(row, PFAF_FIELD_ALIASES['family'], default='')
-                description = self._description_from_row(row)
-                zone_raw = self._zone_from_row(row)
-                besoin_soleil = self._sun_from_row(row)
-                besoin_eau = self._water_from_row(row)
-                hauteur_raw = get_row_value(row, PFAF_FIELD_ALIASES['height'], default=None, coerce_str=False)
-                hauteur_max = None
-                if hauteur_raw is not None:
-                    try:
-                        if isinstance(hauteur_raw, str):
-                            hauteur_raw = hauteur_raw.replace(',', '.')
-                        hauteur_max = float(hauteur_raw)
-                    except (TypeError, ValueError):
-                        pass
-
-                # Détecter cultivar dans le nom latin : si oui, rattacher à l'espèce + Cultivar
-                base_latin, nom_cultivar = parse_cultivar_from_latin(nom_latin or '')
-                defaults_common = {
-                    'nom_commun': nom_commun or nom_latin,
-                    'famille': famille,
-                    'regne': 'plante',
-                    'type_organisme': self._type_from_row(row),
-                    'besoin_soleil': besoin_soleil,
-                    'besoin_eau': besoin_eau,
-                    'hauteur_max': hauteur_max,
-                    'description': description,
-                    'parties_comestibles': get_row_value(
-                        row, PFAF_FIELD_ALIASES['edible_parts'], default=''
-                    ),
-                    'usages_autres': get_row_value(
-                        row, PFAF_FIELD_ALIASES['uses'], default=''
-                    ),
-                    'toxicite': get_row_value(
-                        row, PFAF_FIELD_ALIASES['toxicite'], default=''
-                    ),
-                }
-                if nom_cultivar and base_latin:
-                    defaults_common['slug_latin'] = get_unique_slug_latin(Organism, base_latin)
-                    organism, _cultivar, est_nouveau = find_organism_and_cultivar(
-                        Organism,
-                        Cultivar,
-                        nom_latin=nom_latin or '',
-                        nom_commun=nom_commun or nom_latin or '',
-                        defaults_organism=defaults_common,
-                        defaults_cultivar={},
-                    )
-                else:
-                    organism, est_nouveau = find_or_match_organism(
-                        Organism,
-                        nom_latin=nom_latin or '',
-                        nom_commun=nom_commun or nom_latin,
-                        defaults=defaults_common,
-                    )
-                
-                ensure_organism_genus(organism)
-                
-                # Gérer fixateur_azote
-                fixateur = get_row_value(
-                    row, PFAF_FIELD_ALIASES['fixateur_azote'], default=''
-                ).lower()
-                if fixateur and ('y' in fixateur or 'yes' in fixateur or 'oui' in fixateur or '1' in fixateur):
-                    if not organism.fixateur_azote:
-                        organism.fixateur_azote = True
-                
-                # Gérer les zones de rusticité (format JSONField avec source)
-                current_zones = list(organism.zone_rusticite or [])
-                if zone_raw:
-                    updated_zones = merge_zones_rusticite(
-                        current_zones,
-                        zone_raw,
-                        SOURCE_PFAF
-                    )
-                else:
-                    updated_zones = current_zones
-                
-                # Préparer les mises à jour selon le mode de merge
-                update_fields = {}
-                
-                if merge_mode == MERGE_FILL_GAPS:
-                    # Ne mettre à jour que les champs vides
-                    current = {k: getattr(organism, k, None) for k in [
-                        'famille', 'besoin_eau', 'besoin_soleil', 'hauteur_max',
-                        'description', 'parties_comestibles', 'usages_autres', 'toxicite'
-                    ]}
-                    defaults_to_apply = {
-                        'famille': famille,
-                        'besoin_soleil': besoin_soleil,
-                        'besoin_eau': besoin_eau,
-                        'hauteur_max': hauteur_max,
-                        'description': description,
-                        'parties_comestibles': get_row_value(
-                            row, PFAF_FIELD_ALIASES['edible_parts'], default=''
-                        ),
-                        'usages_autres': get_row_value(
-                            row, PFAF_FIELD_ALIASES['uses'], default=''
-                        ),
-                        'toxicite': get_row_value(
-                            row, PFAF_FIELD_ALIASES['toxicite'], default=''
-                        ),
-                    }
-                    filtered = apply_fill_gaps(current, defaults_to_apply)
-                    update_fields.update(filtered)
-                else:
-                    # Mode overwrite: mettre à jour tous les champs
-                    update_fields.update({
-                        'famille': famille,
-                        'besoin_soleil': besoin_soleil,
-                        'besoin_eau': besoin_eau,
-                        'hauteur_max': hauteur_max,
-                        'description': description,
-                        'parties_comestibles': get_row_value(
-                            row, PFAF_FIELD_ALIASES['edible_parts'], default=''
-                        ),
-                        'usages_autres': get_row_value(
-                            row, PFAF_FIELD_ALIASES['uses'], default=''
-                        ),
-                        'toxicite': get_row_value(
-                            row, PFAF_FIELD_ALIASES['toxicite'], default=''
-                        ),
-                    })
-                
-                # Toujours mettre à jour les zones (merge intelligent)
-                update_fields['zone_rusticite'] = updated_zones
-                
-                # Fusionner data_sources
-                pfaf_payload = self._serializable_payload(row)
-                existing_sources = dict(organism.data_sources or {})
-                existing_sources[SOURCE_PFAF] = pfaf_payload
-                update_fields['data_sources'] = existing_sources
-                
-                # Appliquer les mises à jour
-                for key, value in update_fields.items():
-                    setattr(organism, key, value)
-                organism.save()
-                if est_nouveau:
-                    created += 1
-                    self.stdout.write(f'  ✅ Créé: {nom_commun}')
-                else:
-                    updated += 1
-                    self.stdout.write(f'  🔄 Mis à jour: {nom_commun}')
-            except Exception as e:
-                skipped += 1
-                skipped_errors += 1
-                nom_latin = get_row_value(row, PFAF_FIELD_ALIASES['latin_name'], default='?')
-                # Afficher les détails seulement pour les premières erreurs
-                if skipped_errors <= 5:
-                    self.stdout.write(
-                        self.style.WARNING(f'  ⚠️ Erreur ligne {idx}: {nom_latin} - {e}')
-                    )
-
-        self.stdout.write(self.style.SUCCESS(f'\n🎉 Import PFAF terminé.'))
-        self.stdout.write(f'  ✅ Créés: {created}')
-        self.stdout.write(f'  🔄 Mis à jour: {updated}')
-        self.stdout.write(f'  ⚠️ Ignorés: {skipped} ({skipped_empty_names} noms vides, {skipped_errors} erreurs)')
         try:
-            from botanique.enrichment_score import update_enrichment_scores
-            res = update_enrichment_scores()
-            self.stdout.write(self.style.SUCCESS(f'  📊 Enrichissement: note globale {res["global_score_pct"]}%'))
+            for idx in range(1, n + 1):
+                if idx == 1 or idx % 500 == 0:
+                    self.stdout.write(f'  … progression ligne {idx}/{n}')
+
+                row_series = df.iloc[idx - 1]
+                row = _norm_key_row(row_series, cols)
+
+                try:
+                    self._process_row(
+                        row,
+                        run,
+                        update_existing,
+                        stats,
+                    )
+                except Exception as e:
+                    stats['errors'] += 1
+                    if stats['errors'] <= 10:
+                        self.stdout.write(
+                            self.style.WARNING(f'  Erreur ligne {idx}: {e}')
+                        )
+
+            run.status = 'success'
+            run.finished_at = timezone.now()
+            run.stats = stats
+            run.save()
+
+            self.stdout.write(self.style.SUCCESS('\nTerminé.'))
+            self.stdout.write(
+                f"  Créés (organismes): {stats['created']}\n"
+                f"  Enrichis (organismes existants): {stats['enriched']}\n"
+                f"  OrganismPFAF créés: {stats['pfaf_created']}\n"
+                f"  OrganismPFAF mis à jour: {stats['pfaf_updated']}\n"
+                f"  OrganismPFAF ignorés (déjà présents, sans --update-existing): "
+                f"{stats['pfaf_skipped_existing']}\n"
+                f"  Ignorés (lignes): {stats['skipped']}\n"
+                f"  Erreurs: {stats['errors']}"
+            )
+            if dry_run:
+                self.stdout.write(self.style.WARNING('  [DRY-RUN] Aucune donnée persistée.'))
+
+            if not dry_run:
+                try:
+                    from botanique.enrichment_score import update_enrichment_scores
+                    res = update_enrichment_scores()
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f"  Enrichissement: note globale {res['global_score_pct']}%"
+                        )
+                    )
+                except Exception as e:
+                    self.stdout.write(self.style.WARNING(f'  Recalcul enrichissement: {e}'))
+
         except Exception as e:
-            self.stdout.write(self.style.WARNING(f'  ⚠️ Recalcul enrichissement: {e}'))
+            run.status = 'failure'
+            run.finished_at = timezone.now()
+            run.output_snippet = str(e)[:2000]
+            run.save()
+            raise
 
-    def _serializable_payload(self, row: dict) -> dict:
-        """Construit un dict JSON-serialisable pour data_sources['pfaf']."""
-        out = {}
-        for k, v in row.items():
-            if v is None:
-                continue
-            if isinstance(v, (str, int, float, bool)):
-                out[k] = v
+    def _process_row(
+        self,
+        row: Dict[str, Any],
+        line_no: int,
+        run: DataImportRun,
+        update_existing: bool,
+        stats: Dict[str, Any],
+    ) -> None:
+        nom_latin = get_row_value(
+            row,
+            [
+                'latin_name',
+                'latinname',
+                'scientific_name',
+                'species',
+            ],
+            default='',
+        )
+        nom_commun = get_row_value(
+            row,
+            [
+                'common_name',
+                'commonname',
+                'english_name',
+            ],
+            default='',
+        )
+
+        if not str(nom_latin).strip():
+            stats['skipped'] += 1
+            return
+
+        nom_latin = str(nom_latin).strip()
+        nom_commun = str(nom_commun).strip() if nom_commun else ''
+
+        famille = get_row_value(row, ['family', 'famille'], default='') or ''
+        shade_raw = get_row_value(row, ['shade', 'sun'], default='') or ''
+        moisture_raw = get_row_value(row, ['moisture', 'water'], default='') or ''
+        habit_raw = get_row_value(row, ['habit', 'growth_form', 'type'], default='') or ''
+
+        besoin_soleil = _shade_to_besoin_soleil(str(shade_raw))
+        besoin_eau = _moisture_to_besoin_eau(str(moisture_raw))
+        type_organisme = _habit_to_type_organisme(str(habit_raw))
+
+        hauteur_max = _parse_float(
+            get_row_value(row, ['height', 'hauteur', 'height_m'], default=None, coerce_str=False)
+        )
+        largeur_max = _parse_float(
+            get_row_value(row, ['width', 'largeur', 'spread', 'width_m'], default=None, coerce_str=False)
+        )
+
+        nitrogen_raw = get_row_value(
+            row, ['nitrogen_fixer', 'nitrogenfixer', 'fixateur_azote'], default=''
+        )
+        fixateur_pfaf = _parse_nitrogen_fixer(nitrogen_raw)
+
+        defaults_common: Dict[str, Any] = {
+            'nom_commun': nom_commun or nom_latin,
+            'regne': 'plante',
+            'type_organisme': type_organisme,
+        }
+        if famille:
+            defaults_common['famille'] = famille
+        if besoin_soleil:
+            defaults_common['besoin_soleil'] = besoin_soleil
+        if besoin_eau:
+            defaults_common['besoin_eau'] = besoin_eau
+        if hauteur_max is not None:
+            defaults_common['hauteur_max'] = hauteur_max
+        if largeur_max is not None:
+            defaults_common['largeur_max'] = largeur_max
+
+        base_latin, nom_cultivar = parse_cultivar_from_latin(nom_latin)
+        if nom_cultivar and base_latin:
+            defaults_common['slug_latin'] = get_unique_slug_latin(Organism, base_latin)
+            organism, _cultivar, was_created = find_organism_and_cultivar(
+                Organism,
+                Cultivar,
+                nom_latin=nom_latin,
+                nom_commun=nom_commun or nom_latin,
+                defaults_organism=defaults_common,
+                defaults_cultivar={},
+            )
+        else:
+            organism, was_created = find_or_match_organism(
+                Organism,
+                nom_latin=nom_latin,
+                nom_commun=nom_commun or nom_latin,
+                defaults=defaults_common,
+                create_missing=True,
+            )
+
+        if was_created:
+            stats['created'] += 1
+        else:
+            before = {
+                'famille': organism.famille,
+                'hauteur_max': organism.hauteur_max,
+                'largeur_max': organism.largeur_max,
+                'besoin_soleil': organism.besoin_soleil,
+                'besoin_eau': organism.besoin_eau,
+                'type_organisme': organism.type_organisme,
+            }
+            proposed: Dict[str, Any] = {}
+            if famille:
+                proposed['famille'] = famille
+            if besoin_soleil:
+                proposed['besoin_soleil'] = besoin_soleil
+            if besoin_eau:
+                proposed['besoin_eau'] = besoin_eau
+            if hauteur_max is not None:
+                proposed['hauteur_max'] = hauteur_max
+            if largeur_max is not None:
+                proposed['largeur_max'] = largeur_max
+            if type_organisme:
+                proposed['type_organisme'] = type_organisme
+            filled = apply_fill_gaps(before, proposed)
+            for key, val in filled.items():
+                setattr(organism, key, val)
+
+            enriched = bool(filled)
+            if fixateur_pfaf is True and not organism.fixateur_azote:
+                organism.fixateur_azote = True
+                enriched = True
+            if enriched:
+                stats['enriched'] += 1
+
+        if was_created and fixateur_pfaf is True and not organism.fixateur_azote:
+            organism.fixateur_azote = True
+
+        organism.save()
+        ensure_organism_genus(organism)
+
+        edibility_rating = _parse_int_rating(
+            get_row_value(row, ['edibilityrating', 'edibility_rating'], default=None, coerce_str=False)
+        )
+        medicinal_rating = _parse_int_rating(
+            get_row_value(row, ['medicinalrating', 'medicinal_rating'], default=None, coerce_str=False)
+        )
+        edible_uses = get_row_value(row, ['edible_uses', 'edibleuses'], default='') or ''
+        known_hazards = get_row_value(row, ['known_hazards', 'knownhazards'], default='') or ''
+        cultivation_details = get_row_value(
+            row, ['cultivation_details', 'cultivationdetails'], default=''
+        ) or ''
+        propagation = get_row_value(row, ['propagation'], default='') or ''
+        uk_hardiness = _parse_uk_hardiness(
+            get_row_value(row, ['uk_hardiness', 'ukhardiness', 'hardiness'], default=None, coerce_str=False)
+        )
+        pollinators = get_row_value(row, ['pollinators'], default='') or ''
+        self_fertile = _parse_bool_na(
+            get_row_value(row, ['self_fertile', 'selffertile', 'self-fertile'], default='')
+        )
+        scented = _parse_bool_na(get_row_value(row, ['scented'], default=''))
+
+        pfaf_defaults = {
+            'edibility_rating': edibility_rating,
+            'medicinal_rating': medicinal_rating,
+            'edible_uses': edible_uses,
+            'known_hazards': known_hazards,
+            'cultivation_details': cultivation_details,
+            'propagation': propagation,
+            'uk_hardiness': uk_hardiness,
+            'habit': str(habit_raw)[:50] if habit_raw else '',
+            'pollinators': str(pollinators)[:200] if pollinators else '',
+            'self_fertile': self_fertile,
+            'scented': scented,
+            'import_run': run,
+        }
+
+        pfaf_obj = OrganismPFAF.objects.filter(organism=organism).first()
+        if pfaf_obj is not None:
+            if update_existing:
+                for key, val in pfaf_defaults.items():
+                    setattr(pfaf_obj, key, val)
+                pfaf_obj.save()
+                stats['pfaf_updated'] += 1
             else:
-                out[k] = str(v)
-        return out
-
-    def _description_from_row(self, row: dict) -> str:
-        parts = []
-        for key in PFAF_FIELD_ALIASES['description'] + PFAF_FIELD_ALIASES['habitat']:
-            v = get_row_value(row, [key], default='')
-            if v:
-                parts.append(v)
-        return '\n\n'.join(parts) if parts else ''
-
-    def _zone_from_row(self, row: dict) -> str:
-        z = get_row_value(row, PFAF_FIELD_ALIASES['zone_rusticite'], default='', coerce_str=False)
-        if z is None:
-            return ''
-        if isinstance(z, (int, float)):
-            return str(int(z))
-        return str(z).strip() if z else ''
-
-    def _sun_from_row(self, row: dict) -> str:
-        sun = get_row_value(row, PFAF_FIELD_ALIASES['sun'], default='').lower()
-        if not sun:
-            return ''
-        if 'shade' in sun and 'sun' not in sun and 'partial' not in sun:
-            return 'ombre'
-        if 'partial' in sun or 'semi' in sun or 'mi-ombre' in sun or 'light shade' in sun:
-            return 'mi_ombre'
-        if 'full' in sun or 'sun' in sun or 'soleil' in sun or 'no shade' in sun:
-            return 'plein_soleil'
-        return ''
-
-    def _water_from_row(self, row: dict) -> str:
-        w = get_row_value(row, PFAF_FIELD_ALIASES['water'], default='').lower()
-        if not w:
-            return ''
-        if 'dry' in w or 'low' in w or 'faible' in w:
-            return 'faible'
-        if 'wet' in w or 'high' in w or 'eleve' in w or 'moist' in w:
-            return 'eleve'
-        return 'moyen'
-
-    def _type_from_row(self, row: dict) -> str:
-        t = get_row_value(row, PFAF_FIELD_ALIASES['habit'], default='').lower()
-        if 'tree' in t or 'arbre' in t:
-            return 'arbre_ornement'
-        if 'shrub' in t or 'arbuste' in t:
-            return 'arbuste'
-        if 'perennial' in t or 'vivace' in t:
-            return 'vivace'
-        if 'annual' in t or 'annuelle' in t:
-            return 'annuelle'
-        if 'climber' in t or 'grimpant' in t or 'vine' in t:
-            return 'grimpante'
-        return 'vivace'
+                stats['pfaf_skipped_existing'] += 1
+        else:
+            OrganismPFAF.objects.create(organism=organism, **pfaf_defaults)
+            stats['pfaf_created'] += 1
