@@ -173,6 +173,7 @@ class Command(BaseCommand):
 
                 image_url, titre_wiki, article_url = resolved
                 titre = titre_wiki[:200] if titre_wiki else ''
+                source_url = image_url[:200] if image_url else ''
                 source_author = SOURCE_AUTHOR[:200] if SOURCE_AUTHOR else ''
                 desc_parts = []
                 if article_url:
@@ -189,7 +190,7 @@ class Command(BaseCommand):
                     type_photo=TYPE_REFERENCE,
                     titre=titre,
                     description=description,
-                    source_url=image_url,
+                    source_url=source_url,
                     source_author=source_author,
                     source_license=SOURCE_LICENSE,
                 )
