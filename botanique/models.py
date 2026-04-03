@@ -27,7 +27,7 @@ class OrganismPhoto(models.Model):
         related_name='reference_photos',
         help_text="Espèce illustrée (galerie / import Wikimedia). La photo principale est aussi pointée par Organism.photo_principale.",
     )
-    image = models.ImageField(upload_to='organism_photos/%Y/%m/')
+    image = models.ImageField(upload_to='organism_photos/%Y/%m/', blank=True)
     type_photo = models.CharField(max_length=40, blank=True)
     titre = models.CharField(max_length=200, blank=True)
     description = models.TextField(blank=True)

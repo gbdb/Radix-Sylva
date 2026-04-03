@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
-from django.db import transaction
+from django.db import IntegrityError, connection, transaction
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from botanique.models import Cultivar, DataImportRun, Organism, OrganismPFAF
+from botanique.utils import slugify_latin
 from botanique.pfaf_mapping import get_row_value, to_snake
 from botanique.source_rules import (
     apply_fill_gaps,
@@ -397,24 +398,59 @@ class Command(BaseCommand):
             defaults_common['largeur_max'] = largeur_max
 
         base_latin, nom_cultivar = parse_cultivar_from_latin(nom_latin)
-        if nom_cultivar and base_latin:
-            defaults_common['slug_latin'] = get_unique_slug_latin(Organism, base_latin)
-            organism, _cultivar, was_created = find_organism_and_cultivar(
-                Organism,
-                Cultivar,
-                nom_latin=nom_latin,
-                nom_commun=nom_commun or nom_latin,
-                defaults_organism=defaults_common,
-                defaults_cultivar={},
-            )
-        else:
-            organism, was_created = find_or_match_organism(
-                Organism,
-                nom_latin=nom_latin,
-                nom_commun=nom_commun or nom_latin,
-                defaults=defaults_common,
-                create_missing=True,
-            )
+
+        organism = None
+        was_created = False
+
+        with transaction.atomic():
+            sid = transaction.savepoint()
+            try:
+                if nom_cultivar and base_latin:
+                    dc = dict(defaults_common)
+                    dc['slug_latin'] = get_unique_slug_latin(Organism, base_latin)
+                    organism, _cultivar, was_created = find_organism_and_cultivar(
+                        Organism,
+                        Cultivar,
+                        nom_latin=nom_latin,
+                        nom_commun=nom_commun or nom_latin,
+                        defaults_organism=dc,
+                        defaults_cultivar={},
+                    )
+                else:
+                    organism, was_created = find_or_match_organism(
+                        Organism,
+                        nom_latin=nom_latin,
+                        nom_commun=nom_commun or nom_latin,
+                        defaults=defaults_common,
+                        create_missing=True,
+                    )
+            except IntegrityError:
+                if connection.in_atomic_block:
+                    transaction.savepoint_rollback(sid)
+                species_latin = base_latin if (nom_cultivar and base_latin) else nom_latin
+                slug = slugify_latin(species_latin.strip())
+                if not slug:
+                    self.stats['errors'] += 1
+                    if self.stats['errors'] <= 10:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f'  IntegrityError, slug vide pour {nom_latin!r}'
+                            )
+                        )
+                    return
+                try:
+                    organism = Organism.objects.get(slug_latin=slug)
+                    was_created = False
+                except Organism.DoesNotExist:
+                    self.stats['errors'] += 1
+                    if self.stats['errors'] <= 10:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f'  IntegrityError, aucun Organism pour slug_latin={slug!r} '
+                                f'({nom_latin!r})'
+                            )
+                        )
+                    return
 
         if was_created:
             self.stats['created'] += 1
