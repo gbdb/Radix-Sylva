@@ -172,7 +172,8 @@ class Command(BaseCommand):
                     continue
 
                 image_url, titre_wiki, article_url = resolved
-                titre_store = (titre_wiki or '')[:200]
+                titre = titre_wiki[:200] if titre_wiki else ''
+                source_author = SOURCE_AUTHOR[:200] if SOURCE_AUTHOR else ''
                 desc_parts = []
                 if article_url:
                     desc_parts.append(f'Article: {article_url}')
@@ -186,10 +187,10 @@ class Command(BaseCommand):
                 photo = OrganismPhoto.objects.create(
                     organism=organism,
                     type_photo=TYPE_REFERENCE,
-                    titre=titre_store,
+                    titre=titre,
                     description=description,
                     source_url=image_url,
-                    source_author=SOURCE_AUTHOR,
+                    source_author=source_author,
                     source_license=SOURCE_LICENSE,
                 )
                 stats['created'] += 1
