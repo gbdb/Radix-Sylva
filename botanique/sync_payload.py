@@ -14,6 +14,7 @@ from botanique.models import (
     OrganismAmendment,
     OrganismCalendrier,
     OrganismNom,
+    OrganismPFAF,
     OrganismPropriete,
     OrganismUsage,
 )
@@ -133,6 +134,25 @@ def organism_amendment_to_dict(oa: OrganismAmendment) -> dict:
     }
 
 
+def organism_pfaf_to_sync_dict(p: OrganismPFAF) -> dict:
+    return {
+        'edibility_rating': p.edibility_rating,
+        'medicinal_rating': p.medicinal_rating,
+        'edible_uses': p.edible_uses,
+        'known_hazards': p.known_hazards,
+        'cultivation_details': p.cultivation_details,
+        'propagation': p.propagation,
+        'uk_hardiness': p.uk_hardiness,
+        'habit': p.habit,
+        'pollinators': p.pollinators,
+        'self_fertile': p.self_fertile,
+        'scented': p.scented,
+        'import_run_id': p.import_run_id,
+        'date_import': _iso(p.date_import),
+        'date_modification': _iso(p.date_modification),
+    }
+
+
 def organism_to_sync_dict(o: Organism) -> dict:
     d = {'id': o.id}
     for f in ORGANISM_SYNC_FIELDS:
@@ -146,6 +166,11 @@ def organism_to_sync_dict(o: Organism) -> dict:
     d['amendements_recommandes'] = [
         organism_amendment_to_dict(x) for x in o.amendements_recommandes.all()
     ]
+    try:
+        pfaf_data = organism_pfaf_to_sync_dict(o.pfaf)
+    except OrganismPFAF.DoesNotExist:
+        pfaf_data = None
+    d['pfaf'] = pfaf_data
     return d
 
 

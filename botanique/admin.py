@@ -12,6 +12,7 @@ from botanique.models import (
     OrganismAmendment,
     OrganismCalendrier,
     OrganismNom,
+    OrganismPFAF,
     OrganismPhoto,
     OrganismPropriete,
     OrganismUsage,
@@ -50,6 +51,12 @@ class CultivarAdmin(admin.ModelAdmin):
 class DataImportRunAdmin(admin.ModelAdmin):
     list_display = ('source', 'status', 'started_at', 'finished_at', 'user')
     list_filter = ('source', 'status')
+
+
+@admin.register(OrganismPFAF)
+class OrganismPFAFAdmin(admin.ModelAdmin):
+    list_display = ('organism', 'edibility_rating', 'medicinal_rating', 'date_import')
+    raw_id_fields = ('organism', 'import_run')
 
 
 admin.site.register(OrganismPropriete)

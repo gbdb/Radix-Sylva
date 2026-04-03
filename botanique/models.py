@@ -506,3 +506,58 @@ class DataImportRun(models.Model):
 
     def __str__(self):
         return f"{self.get_source_display()} — {self.started_at:%Y-%m-%d %H:%M} ({self.get_status_display()})"
+
+
+class OrganismPFAF(models.Model):
+    """Données détaillées importées depuis Plants For A Future (PFAF), liées 1:1 à Organism."""
+    organism = models.OneToOneField(
+        'Organism', on_delete=models.CASCADE, related_name='pfaf'
+    )
+    edibility_rating = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Note comestibilité PFAF (0-5)"
+    )
+    medicinal_rating = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Note médicinale PFAF (0-5)"
+    )
+    edible_uses = models.TextField(
+        blank=True, help_text="Usages comestibles selon PFAF"
+    )
+    known_hazards = models.TextField(
+        blank=True, help_text="Dangers et toxicité selon PFAF"
+    )
+    cultivation_details = models.TextField(
+        blank=True, help_text="Détails de culture selon PFAF"
+    )
+    propagation = models.TextField(
+        blank=True, help_text="Propagation selon PFAF"
+    )
+    uk_hardiness = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Rusticité PFAF échelle UK (1-10)"
+    )
+    habit = models.CharField(
+        max_length=50, blank=True,
+        help_text="Port de la plante selon PFAF (Tree, Shrub, Perennial...)"
+    )
+    pollinators = models.CharField(
+        max_length=200, blank=True, help_text="Pollinisateurs selon PFAF"
+    )
+    self_fertile = models.BooleanField(
+        null=True, blank=True, help_text="Auto-fertile selon PFAF"
+    )
+    scented = models.BooleanField(
+        null=True, blank=True, help_text="Plante parfumée selon PFAF"
+    )
+    import_run = models.ForeignKey(
+        'DataImportRun', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='pfaf_records'
+    )
+    date_import = models.DateTimeField(auto_now_add=True)
+    date_modification = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'species_organismpfaf'
+        verbose_name = "Données PFAF"
+        verbose_name_plural = "Données PFAF"
+
+    def __str__(self):
+        return f"PFAF — {self.organism.nom_latin}"
