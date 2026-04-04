@@ -1,6 +1,7 @@
 """
 Sérialisation JSON des enregistrements pour l’API /sync/ (cache Jardin bIOT).
-Les photos Radix (OrganismPhoto) ne sont pas poussées : BIOT garde species.Photo / photo_principale locale.
+Les fichiers image OrganismPhoto ne sont pas poussés ; une URL externe peut être transmise
+via photo_principale_url lorsque OrganismPhoto.source_url est renseigné.
 """
 from __future__ import annotations
 
@@ -171,6 +172,10 @@ def organism_to_sync_dict(o: Organism) -> dict:
     except OrganismPFAF.DoesNotExist:
         pfaf_data = None
     d['pfaf'] = pfaf_data
+    if o.photo_principale and o.photo_principale.source_url:
+        d['photo_principale_url'] = o.photo_principale.source_url
+    else:
+        d['photo_principale_url'] = None
     return d
 
 
