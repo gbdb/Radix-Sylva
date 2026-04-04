@@ -123,6 +123,9 @@ class Command(BaseCommand):
             'created': 0,
             'principale_set': 0,
             'skipped': 0,
+            'skipped_no_latin': 0,
+            'skipped_has_principale': 0,
+            'skipped_no_wikipedia_image': 0,
             'errors': 0,
             'fallback_mediawiki': 0,
             'dry_run': dry_run,
@@ -130,6 +133,8 @@ class Command(BaseCommand):
             'overwrite': overwrite,
             'lang': primary_lang,
         }
+        verbosity = int(options.get('verbosity', 1))
+        debug_skip = verbosity >= 2
 
         run = DataImportRun.objects.create(
             source='wikipedia',
@@ -159,10 +164,24 @@ class Command(BaseCommand):
                 nom_latin = (organism.nom_latin or '').strip()
                 if not nom_latin:
                     stats['skipped'] += 1
+                    stats['skipped_no_latin'] += 1
+                    if debug_skip:
+                        self.stdout.write(
+                            f'  [skip] id={organism.pk} raison=nom_latin_vide '
+                            f'photo_principale_id={repr(organism.photo_principale_id)} overwrite={overwrite}'
+                        )
                     continue
 
-                if not overwrite and organism.photo_principale_id:
+                # Sans --overwrite : défense en profondeur si une photo principale existe encore (anormal
+                # car le queryset filtre photo_principale__isnull=True, sauf si queryset modifié ailleurs).
+                if (not overwrite) and (organism.photo_principale_id is not None):
                     stats['skipped'] += 1
+                    stats['skipped_has_principale'] += 1
+                    if debug_skip:
+                        self.stdout.write(
+                            f'  [skip] id={organism.pk} raison=photo_principale_deja_definie '
+                            f'photo_principale_id={organism.photo_principale_id}'
+                        )
                     continue
 
                 resolved = self._resolve_image_for_organism(
@@ -170,6 +189,12 @@ class Command(BaseCommand):
                 )
                 if not resolved:
                     stats['skipped'] += 1
+                    stats['skipped_no_wikipedia_image'] += 1
+                    if debug_skip:
+                        self.stdout.write(
+                            f'  [skip] id={organism.pk} raison=pas_d_image_wikipedia '
+                            f'nom_latin={nom_latin!r} photo_principale_id={repr(organism.photo_principale_id)}'
+                        )
                     continue
 
                 image_url, titre_wiki, article_url = resolved
@@ -210,7 +235,10 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"  OrganismPhoto créés: {stats['created']}\n"
                 f"  photo_principale assignée: {stats['principale_set']}\n"
-                f"  Ignorés: {stats['skipped']}\n"
+                f"  Ignorés (total): {stats['skipped']}\n"
+                f"    — sans nom latin: {stats['skipped_no_latin']}\n"
+                f"    — déjà photo_principale (anormal si queryset filtré): {stats['skipped_has_principale']}\n"
+                f"    — pas d’image Wikipedia: {stats['skipped_no_wikipedia_image']}\n"
                 f"  Erreurs (requêtes): {stats['errors']}\n"
                 f"  Fallback MediaWiki (pageimages): {stats['fallback_mediawiki']}"
             )
