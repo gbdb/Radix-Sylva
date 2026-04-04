@@ -100,7 +100,7 @@ class SyncOrganismsView(APIView):
     def get(self, request):
         organism_id_raw = request.query_params.get('organism_id')
         base_qs = (
-            Organism.objects.select_related('pfaf')
+            Organism.objects.select_related('pfaf', 'photo_principale')
             .prefetch_related(
                 'noms',
                 'proprietes',
