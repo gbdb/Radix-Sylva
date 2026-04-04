@@ -124,6 +124,7 @@ class Command(BaseCommand):
             'principale_set': 0,
             'skipped': 0,
             'errors': 0,
+            'fallback_mediawiki': 0,
             'dry_run': dry_run,
             'limit': limit,
             'overwrite': overwrite,
@@ -210,7 +211,8 @@ class Command(BaseCommand):
                 f"  OrganismPhoto créés: {stats['created']}\n"
                 f"  photo_principale assignée: {stats['principale_set']}\n"
                 f"  Ignorés: {stats['skipped']}\n"
-                f"  Erreurs (requêtes): {stats['errors']}"
+                f"  Erreurs (requêtes): {stats['errors']}\n"
+                f"  Fallback MediaWiki (pageimages): {stats['fallback_mediawiki']}"
             )
             if dry_run:
                 self.stdout.write(self.style.WARNING('  [DRY-RUN] Aucune donnée persistée.'))
@@ -241,9 +243,16 @@ class Command(BaseCommand):
                 time.sleep(REQUEST_DELAY_SEC)
                 if not data:
                     continue
+                if data.get('type') == 'disambiguation':
+                    continue
                 parsed = parse_summary_payload(data)
                 if parsed:
                     return parsed
+                mw = self._fetch_pageimages_fallback(session, lang, title, stats)
+                time.sleep(REQUEST_DELAY_SEC)
+                if mw:
+                    stats['fallback_mediawiki'] += 1
+                    return mw
         return None
 
     def _fetch_summary(
@@ -264,6 +273,57 @@ class Command(BaseCommand):
             except ValueError:
                 stats['errors'] += 1
                 return None
+        except Exception:
+            stats['errors'] += 1
+            return None
+
+    def _fetch_pageimages_fallback(
+        self,
+        session: requests.Session,
+        lang: str,
+        title: str,
+        stats: dict,
+    ) -> tuple[str, str, str] | None:
+        """MediaWiki query pageimages si le summary REST n’a pas d’image."""
+        api_url = f'https://{lang}.wikipedia.org/w/api.php'
+        params = {
+            'action': 'query',
+            'titles': title,
+            'prop': 'pageimages',
+            'piprop': 'original|thumbnail',
+            'pithumbsize': 500,
+            'format': 'json',
+            'formatversion': 2,
+        }
+        try:
+            r = session.get(api_url, params=params, timeout=SUMMARY_TIMEOUT)
+            if r.status_code != 200:
+                return None
+            try:
+                payload = r.json()
+            except ValueError:
+                stats['errors'] += 1
+                return None
+        except Exception:
+            stats['errors'] += 1
+            return None
+
+        try:
+            pages = payload.get('query', {}).get('pages') or []
+            if not pages:
+                return None
+            page = pages[0]
+            if page.get('missing'):
+                return None
+            image_url = (page.get('original') or {}).get('source') or (
+                page.get('thumbnail') or {}
+            ).get('source')
+            if not image_url:
+                return None
+            titre = (page.get('title') or title).strip()
+            path = quote(title, safe='/')
+            article_url = f'https://{lang}.wikipedia.org/wiki/{path}'
+            return image_url, titre, article_url
         except Exception:
             stats['errors'] += 1
             return None
