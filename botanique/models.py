@@ -32,7 +32,7 @@ class OrganismPhoto(models.Model):
     titre = models.CharField(max_length=200, blank=True)
     description = models.TextField(blank=True)
     date_prise = models.DateField(null=True, blank=True)
-    source_url = models.URLField(blank=True)
+    source_url = models.URLField(max_length=500, blank=True)
     source_author = models.CharField(max_length=200, blank=True)
     source_license = models.CharField(max_length=50, blank=True)
     date_ajout = models.DateTimeField(auto_now_add=True)
