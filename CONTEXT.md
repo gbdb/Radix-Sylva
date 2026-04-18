@@ -9,6 +9,8 @@
 ## Documentation (dépôt)
 
 - Index : **`docs/README.md`**
+- Premier clone, PostgreSQL, `venv`, URLs locales : **`docs/installation-locale.md`**
+- API sync (`/api/v1/sync/*`) : **`docs/api-sync.md`**
 - Structure des données, sources, espèce vs cultivar, fusion multi-sources : **`docs/donnees-sources-et-modele.md`**
 - Guide opérationnel (commandes `manage.py`, enchaînements, lien avec BIOT) : **`docs/gestion-des-donnees.md`**
 

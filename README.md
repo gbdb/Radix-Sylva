@@ -1,101 +1,89 @@
 # Radix Sylva
 
-Base de données botanique publique (monde tempéré, focus Québec/Canada).  
-Projet Django séparé de **Jardin bIOT** — **Pass A** : squelette + modèles + API lecture + OpenAPI.
+[![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://www.python.org/)
+[![Django](https://img.shields.io/badge/Django-5.2+-092E20.svg)](https://www.djangoproject.com/)
 
-**Prod** : `https://radix.jardinbiot.ca`. Infra : [`docs/deploy-digitalocean.md`](docs/deploy-digitalocean.md) (runbook **Jardin bIOT** : `biot/docs/deploy-radix-digitalocean-runbook.md`) ; plan global : `biot/docs/plan-radix-biot-phases.md`.
+**Base botanique de référence** pour le monde tempéré, avec un accent Québec / Canada : organismes, cultivars, relations de compagnonnage, amendements — alimentée par des **imports massifs** (Hydro-Québec, VASCAN, PFAF, etc.), **enrichissement** et **règles de fusion** entre sources. Ce n’est pas un fichier plat : chaque import est traçable, les conflits sont gérés, et le modèle est pensé pour évoluer avec la communauté et les partenaires données.
+
+**En production** : API publique sur **[radix.jardinbiot.ca](https://radix.jardinbiot.ca)** — lecture, documentation OpenAPI, et flux **sync** pour les applications clientes.
+
+---
+
+## Pourquoi Radix existe
+
+- **Une seule source de vérité** pour le catalogue botanique partagé entre projets (qualité, cohérence des noms, historique d’import).
+- **Multi-sources** : agréger, prioriser et documenter plutôt que dupliquer des CSV figés.
+- **Ouverture** : API REST versionnée pour que d’autres outils (dont **[Jardin bIOT](https://jardinbiot.ca)**) synchronisent un cache local sans refaire toute la chaîne d’import.
+
+Le détail du modèle, des sources et des choix de fusion : [**docs/donnees-sources-et-modele.md**](docs/donnees-sources-et-modele.md).
+
+---
+
+## Lien avec Jardin bIOT
+
+**Radix** construit et sert le **référentiel espèces** (tables `species_*`, imports, API). **Jardin bIOT** gère les **jardins**, **spécimens**, **terrain**, semences, utilisateurs : il conserve une **copie synchronisée** du catalogue via `sync_radixsylva`, pas une deuxième base maîtresse pour les espèces.
+
+```mermaid
+flowchart LR
+  subgraph radix [Radix_Sylva]
+    imports[Imports_multi_sources]
+    api[API_publique]
+  end
+  subgraph biot [Jardin_bIOT]
+    cache[Cache_species]
+    gardens[Jardins_et_terrain]
+  end
+  imports --> api
+  api -->|"sync_radixsylva"| cache
+  cache --> gardens
+```
+
+- Plan des phases : [plan-radix-biot-phases.md](../biot/docs/plan-radix-biot-phases.md) (dépôt BIOT)
+- Endpoints sync et clés API : [**docs/api-sync.md**](docs/api-sync.md)
+
+---
+
+## Découvrir l’API
+
+| Environnement | Base URL |
+|---------------|----------|
+| **Production** | https://radix.jardinbiot.ca/api/v1/ |
+| **Exemple** | …/api/v1/organisms/ |
+
+- **OpenAPI** : `/api/v1/schema/` · **Swagger** : `/api/v1/docs/`
+- Contexte déploiement et runbooks : [**CONTEXT.md**](CONTEXT.md) · [**docs/deploy-digitalocean.md**](docs/deploy-digitalocean.md) · runbook BIOT : [deploy-radix-digitalocean-runbook.md](../biot/docs/deploy-radix-digitalocean-runbook.md)
+
+---
+
+## Démarrage rapide (développement)
+
+```bash
+git clone <ce-depot> && cd radixsylva
+python3 -m venv .venv && source .venv/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Configurer PostgreSQL — voir docs/installation-locale.md
+python manage.py migrate && python manage.py runserver 0.0.0.0:8001
+```
+
+**Guide complet** (Docker vs Homebrew, ports, URLs locales) : [**docs/installation-locale.md**](docs/installation-locale.md).
+
+Opérations d’import et maintenance : [**docs/gestion-des-donnees.md**](docs/gestion-des-donnees.md).
+
+---
 
 ## Documentation
 
 | Document | Rôle |
 |----------|------|
-| [`docs/README.md`](docs/README.md) | Index des fichiers dans `docs/`. |
-| [`docs/donnees-sources-et-modele.md`](docs/donnees-sources-et-modele.md) | Modèle de données, liste des sources d’import, réflexions (cultivars, conflits, pistes IQDHO/FIHOQ). |
-| [`docs/gestion-des-donnees.md`](docs/gestion-des-donnees.md) | **Opérationnel** : où et comment lancer les imports et la maintenance. |
+| [**docs/README.md**](docs/README.md) | Index du dossier `docs/`. |
+| [**docs/installation-locale.md**](docs/installation-locale.md) | Prérequis, PostgreSQL, premier clone, migrations. |
+| [**docs/api-sync.md**](docs/api-sync.md) | Pass technique, endpoints `/sync/*`, auth `X-Radix-Sync-Key`. |
+| [**docs/donnees-sources-et-modele.md**](docs/donnees-sources-et-modele.md) | Modèle de données, sources, cultivars, conflits. |
+| [**docs/gestion-des-donnees.md**](docs/gestion-des-donnees.md) | Imports et enchaînements opérationnels. |
+| [**docs/env-et-deploiement.md**](docs/env-et-deploiement.md) | Variables `.env`, prod, bonnes pratiques. |
+| [**CONTEXT.md**](CONTEXT.md) | Contexte technique, tables, déploiement, lien BIOT. |
 
-## Prérequis
+---
 
-- Python 3.11+
-- **PostgreSQL obligatoire** (plus de SQLite pour la base Django — aligné prod + `search_vector`).
-
-**Fichiers PFAF au format `.sqlite`** : ce sont des **fichiers source** pour l’import (`import_pfaf`), pas la base Django.
-
-### Si `docker: command not found`
-
-Tu n’as pas Docker installé (normal sur beaucoup de Mac). Deux options :
-
-**A — Docker Desktop (recommandé)**  
-1. Installe [Docker Desktop pour Mac](https://www.docker.com/products/docker-desktop/).  
-2. Ouvre l’app une fois (icône baleine dans la barre de menu).  
-3. Dans `radixsylva/` : `docker compose up -d`  
-4. Dans `.env` :  
-   `DATABASE_URL=postgres://radixsylva:radixsylva@127.0.0.1:5433/radixsylva`
-
-**B — PostgreSQL sans Docker (Homebrew)**  
-
-```bash
-brew install postgresql@16
-brew services start postgresql@16
-createuser -s radixsylva  # ou via psql : utilisateur + mot de passe selon ta config
-createdb -O radixsylva radixsylva
-```
-
-Puis dans `.env` (adapte user/mot de passe/port ; souvent port **5432**) :  
-`DATABASE_URL=postgres://radixsylva:TON_MOT_DE_PASSE@127.0.0.1:5432/radixsylva`
-
-Variables d’environnement (SECRET_KEY, `DATABASE_URL` local vs cloud) : voir **`docs/env-et-deploiement.md`**.  
-Si les repos **BIOT** et **Radix** sont côte à côte : alignement des `.env` et ports **5434 / 5433** → [`../biot/docs/dev-env-local-biot-radix.md`](../biot/docs/dev-env-local-biot-radix.md).
-
-## Configuration
-
-```bash
-cd radixsylva
-python3 -m venv .venv
-source .venv/bin/activate  # ou .venv\Scripts\activate sur Windows
-pip install -r requirements.txt
-cp .env.example .env
-# Optionnel : DATABASE_URL pour Postgres (Docker port 5433 ou Homebrew 5432)
-```
-
-## Migrations
-
-```bash
-python manage.py migrate
-python manage.py createsuperuser
-python manage.py runserver 0.0.0.0:8001
-```
-
-- Admin : http://127.0.0.1:8001/admin/
-- API : http://127.0.0.1:8001/api/v1/organisms/
-- OpenAPI : http://127.0.0.1:8001/api/v1/schema/
-- Swagger : http://127.0.0.1:8001/api/v1/docs/
-
-## Pass A — statut
-
-- [x] Projet Django + app `botanique`
-- [x] Modèles botaniques (`species_*` + `species_organismphoto` + `species_dataimportrun`)
-- [x] `source_rules.py` (import slugify depuis `botanique.utils`)
-- [x] API lecture `organisms`, `cultivars`, `amendments` + drf-spectacular
-- [x] Commandes d’import botaniques (`import_*`, `merge_*`, `populate_*`, `wipe_species`, `clean_organisms_keep_hq`, etc.)
-- [x] `enrichment.py`, `enrichment_score.py`, `pfaf_mapping.py`, `ancestrale_mapping.py`
-- [ ] `migrate_cultivar_organisms` — reste dans **Jardin bIOT** (réattribue des spécimens)
-- [x] Endpoints sync `/api/v1/sync/*` — **Pass B** (meta, amendments, organisms, cultivars, companions, deleted vide)
-
-### API sync (cache Jardin bIOT)
-
-- `GET /api/v1/sync/meta/` — `server_time`, `schema_version`
-- `GET /api/v1/sync/amendments/?since=&page=` — filtre `date_ajout > since`
-- `GET /api/v1/sync/organisms/?since=` — filtre `date_modification > since` + noms, propriétés, usages, calendrier, amendements recommandés
-- `GET /api/v1/sync/organisms/?organism_id=<pk>` — **sync ciblée** : un seul organisme (ignore `since`) ; 0 ou 1 résultat — utilisé par Jardin bIOT après une demande d’espèce (`missing-species-request`)
-- `GET /api/v1/sync/cultivars/?since=` — porte-greffes + pollinisateurs
-- `GET /api/v1/sync/companions/?since=` — filtre `date_ajout > since` (nouvelles relations)
-- `GET /api/v1/sync/deleted/` — réservé (listes vides en v1)
-
-Si `RADIX_SYLVA_SYNC_API_KEYS` est défini dans `.env`, envoyer l’en-tête `X-Radix-Sync-Key` (même valeur côté BIOT : `RADIX_SYLVA_SYNC_API_KEY`).
-
-## Import des données depuis Jardin bIOT
-
-Voir `CONTEXT.md` (pg_dump des tables `species_*` ou export JSON dédié).  
-**Attention** : la colonne `species_espece.photo_principale_id` pointait vers `species_photo` dans BIOT ; ici elle pointe vers `species_organismphoto` — migration données photos à planifier (script dédié).
-
-**Migration vers le serveur DigitalOcean (staging / prod)** : guide détaillé dans le dépôt Jardin bIOT — [`docs/migration-donnees-radix-phase-1-5.md`](../biot/docs/migration-donnees-radix-phase-1-5.md) (si les deux repos sont côte à côte).
+Licence : **AGPL-3.0**, alignée sur l’écosystème [Jardin bIOT](https://jardinbiot.ca) (texte de référence sur le dépôt principal du projet).
